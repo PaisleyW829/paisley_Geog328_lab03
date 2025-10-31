@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en-US">
+<head>
+  <meta charset="utf-8" />
+  <title>US States & Colleges Map</title>
+  <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
+  <link href="https://api.mapbox.com/mapbox-gl-js/v2.5.0/mapbox-gl.css" rel="stylesheet" />
+  <script src="https://api.mapbox.com/mapbox-gl-js/v2.5.0/mapbox-gl.js"></script>
+  <style>
+    :root {
+      --panel-width: 420px;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+
+    #container {
+      display: flex;
+      height: 100vh;
+      flex-direction: row;
+      align-items: stretch;
+    }
+    #map { flex-grow: 1; }
+
+    #side-panel {
+      width: var(--panel-width);
+      max-width: 100%;
+      background: #ffffffcc;
+      backdrop-filter: blur(4px);
+      border-left: 1px solid #e6e6e6;
+      padding: 16px;
+      overflow-y: auto;
+    }
+    h2 { margin: 0 0 8px; }
+    .subtitle { margin: 0 0 12px; color: #555; font-size: 0.95rem; }
+
+    .controls { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+    button {
+      padding: 8px 10px;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      background: #fff;
+      cursor: pointer;
+    }
+    button:hover { background: #f5f5f5; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      border: 1px solid #e5e5e5;
+      background: #fff;
+    }
+    th, td {
+      text-align: left;
+      padding: 12px;
+      border-bottom: 1px solid #f0f0f0;
+      vertical-align: top;
+    }
+    tr:nth-child(even) { background: #fafafa; }
+    th { position: sticky; top: 0; background: #fff; z-index: 1; }
+
+    @media (max-width: 1024px) {
+      #side-panel { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <main id="container">
+    <div id="map"></div>
+
+    <aside id="side-panel">
+      <h2>US Colleges & Universities</h2>
+
+      <div class="controls">
+        <button id="sort-by-name">Sort by Name [A to Z]</button>
+      </div>
+
+      <table id="data-table">
+          <tr>
+            <th>Name</th>
+            <th>Details</th>
+          </tr>
+      </table>
+    </aside>
+  </main>
+
+  <script>
+    mapboxgl.accessToken = 'pk.eyJ1IjoicGFpc2xleXc4MjkiLCJhIjoiY21oZTZuZzZnMGI0MTJ2cHZidmZuczF0OCJ9.4T-vDx_ylQRl6MYK9gra1w';
+
+    const map = new mapboxgl.Map({
+      container: 'map',
+      style: 'mapbox://styles/mapbox/light-v11', 
+      center: [-98.5, 39.8],                     
+      zoom: 3.5
+    });
+
+    function pickProp(obj, keys, fallback = '') {
+      for (const k of keys) {
+        if (obj && Object.prototype.hasOwnProperty.call(obj, k) && obj[k] != null && obj[k] !== '') {
+          return obj[k];
+        }
+      }
+      return fallback;
+    }
+
+    function buildDetails(props) {
+      const city  = pickProp(props, ['city','CITY','place','Place','City']);
+      const state = pickProp(props, ['state','STATE','st','ST','stusps','STUSPS','region','Region']);
+      const type  = pickProp(props, ['type','TYPE','class','CLASS','category','Category']);
+      const bits = [];
+      if (city)  bits.push(city);
+      if (state) bits.push(state);
+      if (type)  bits.push(`(${type})`);
+      return bits.join(', ');
+    }
+
+    function populateTable(features) {
+      const tbody = document.querySelector('#data-table tbody');
+      tbody.innerHTML = '';
+      for (const f of features) {
+        const props = f.properties || {};
+        const name = pickProp(props, ['name','NAME','instnm','INSTNM','title','Title','label','LABEL'], '(unnamed)');
+        const details = buildDetails(props);
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${name}</td><td>${details}</td>`;
+
+        tr.addEventListener('click', () => {
+          try {
+            if (f.geometry.type === 'Point') {
+              const [lng, lat] = f.geometry.coordinates;
+              map.flyTo({ center: [lng, lat], zoom: 9, essential: true });
+            } else {
+              const bounds = new mapboxgl.LngLatBounds();
+              const addCoord = (c) => bounds.extend(c);
+              const walk = (geom) => {
+                const t = geom.type;
+                if (t === 'Polygon') geom.coordinates.flat().forEach(addCoord);
+                else if (t === 'MultiPolygon') geom.coordinates.flat(2).forEach(addCoord);
+                else if (t === 'LineString') geom.coordinates.forEach(addCoord);
+                else if (t === 'MultiLineString') geom.coordinates.flat().forEach(addCoord);
+                else if (t === 'Point') addCoord(geom.coordinates);
+              };
+              walk(f.geometry);
+              map.fitBounds(bounds, { padding: 40, duration: 900 });
+            }
+          } catch(e) {}
+        });
+        tbody.appendChild(tr);
+      }
+    }
+
+    function sortTableAsc() {
+      const tbody = document.querySelector('#data-table tbody');
+      const rows = Array.from(tbody.querySelectorAll('tr'));
+      rows.sort((a, b) => {
+        const A = a.children[0].textContent.trim().toLowerCase();
+        const B = b.children[0].textContent.trim().toLowerCase();
+        return A.localeCompare(B);
+      });
+      tbody.innerHTML = '';
+      rows.forEach(r => tbody.appendChild(r));
+    }
+    document.getElementById('sort-by-name').addEventListener('click', sortTableAsc);
+
+    async function loadData() {
+
+      const statesURL   = 'assets/states.json';
+      const collegesURL = 'assets/CollegesAndUniversities.geojson';
+
+      const [statesResp, collegesResp] = await Promise.all([
+        fetch(statesURL),
+        fetch(collegesURL)
+      ]);
+      const states   = await statesResp.json();
+      const colleges = await collegesResp.json();
+
+      map.on('load', () => {
+
+        map.addSource('states', { type: 'geojson', data: states });
+
+        map.addLayer({
+          id: 'states-fill',
+          type: 'fill',
+          source: 'states',
+          paint: {
+            'fill-color': '#a0c4ff',
+            'fill-opacity': 0.25
+          }
+        });
+
+        map.addLayer({
+          id: 'states-outline',
+          type: 'line',
+          source: 'states',
+          paint: {
+            'line-color': '#4974b8',
+            'line-width': 1
+          }
+        });
+
+
+        map.addSource('colleges', { type: 'geojson', data: colleges });
+
+        map.addLayer({
+          id: 'colleges-points',
+          type: 'circle',
+          source: 'colleges',
+          paint: {
+            'circle-radius': [
+              'interpolate', ['linear'], ['zoom'],
+              3, 3,
+              10, 6,
+              14, 8
+            ],
+            'circle-color': '#ff595e',
+            'circle-stroke-width': 1.5,
+            'circle-stroke-color': '#ffffff'
+          }
+        });
+
+        map.on('click', 'colleges-points', (e) => {
+          const f = e.features && e.features[0];
+          if (!f) return;
+          const props = f.properties || {};
+          const name = pickProp(props, ['name','NAME','instnm','INSTNM','title','Title','label','LABEL'], '(unnamed)');
+          const details = buildDetails(props);
+          new mapboxgl.Popup()
+            .setLngLat(e.lngLat)
+            .setHTML(`<strong>${name}</strong><br>${details}`)
+            .addTo(map);
+        });
+
+        map.on('mouseenter', 'colleges-points', () => map.getCanvas().style.cursor = 'pointer');
+        map.on('mouseleave', 'colleges-points', () => map.getCanvas().style.cursor = '');
+
+        const features = (colleges && colleges.features) ? colleges.features : [];
+        populateTable(features);
+      });
+    }
+
+    loadData();
+  </script>
+</body>
+</html>
